@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# omashelf — command line companion for the Omarchy Omashelf plugin.
+# Reads and writes the same library file the bar widget watches, so changes
+# show up in the panel immediately.
+
+set -euo pipefail
+
+LIBRARY="${OMASHELF_LIBRARY:-$HOME/.local/state/omarchy/omashelf/library.json}"
+
+usage() {
+  cat <<'EOF'
+Usage: omashelf <command> [args]
+
+  list                        Show the shelf
+  add <title> <pages> [author]
+                              Add a book and start reading it
+  read <title-fragment> <pages>
+                              Log pages read (negative to go back)
+  page <title-fragment> <page>
+                              Set the exact page you're on
+  finish <title-fragment>     Mark a book finished
+  remove <title-fragment>     Delete a book
+  stats                       Reading dashboard as text
+  path                        Print the library file path
+
+Set OMASHELF_LIBRARY to use a different library file.
+EOF
+}
+
+py() {
+  python3 - "$LIBRARY" "$@"
+}
+
+ensure_library() {
+  mkdir -p "$(dirname "$LIBRARY")"
+  [[ -f "$LIBRARY" ]] || printf '{\n  "version": 1,\n  "books": []\n}\n' >"$LIBRARY"
+}
+
+cmd="${1:-list}"
+shift || true
+ensure_library
+
+case "$cmd" in
+  path) echo "$LIBRARY" ;;
+
+  list) py <<'PY'
+import json, sys
+lib = json.load(open(sys.argv[1]))
+books = lib.get("books", [])
+if not books:
+    print("Shelf is empty. omashelf add \"Title\" 320 \"Author\"")
+    raise SystemExit(0)
+rank = {"reading": 0, "paused": 1, "wishlist": 2, "finished": 3}
+books.sort(key=lambda b: (rank.get(b.get("status"), 4), -(b.get("currentPage", 0) / max(1, b.get("totalPages", 1)))))
+for b in books:
+    total = max(1, b.get("totalPages", 1))
+    pct = round(100 * b.get("currentPage", 0) / total)
+    mark = {"reading": "*", "finished": "v", "paused": "-"}.get(b.get("status"), " ")
+    author = b.get("author") or ""
+    print(f"{mark} {pct:3d}%  {b.get('currentPage',0):>5}/{total:<5} {b.get('title','')}" + (f" — {author}" if author else ""))
+PY
+    ;;
+
+  add)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    py "$1" "$2" "${3:-}" <<'PY'
+import json, sys, time, random, datetime
+path, title, pages, author = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+lib = json.load(open(path))
+book = {
+    "id": "bk-%s-%s" % (format(int(time.time() * 1000), "x"), format(random.randint(0, 10**6), "x")),
+    "title": title, "author": author, "totalPages": pages, "currentPage": 0,
+    "status": "reading", "started": datetime.date.today().isoformat(), "finished": "",
+    "rating": 0, "log": [],
+}
+lib.setdefault("books", []).append(book)
+lib["version"] = 1
+json.dump(lib, open(path, "w"), indent=2)
+open(path, "a").write("\n")
+print(f"Added {title} ({pages} pages)")
+PY
+    ;;
+
+  read|page|finish|remove)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    if [[ "$cmd" == "read" || "$cmd" == "page" ]]; then
+      [[ "${2:-}" =~ ^-?[0-9]+$ ]] || { echo "omashelf $cmd needs a whole number of pages" >&2; exit 1; }
+    fi
+    py "$cmd" "$1" "${2:-0}" <<'PY'
+import json, sys, datetime
+path, action, needle, amount = sys.argv[1], sys.argv[2], sys.argv[3].lower(), int(sys.argv[4])
+lib = json.load(open(path))
+books = lib.get("books", [])
+matches = [b for b in books if needle in b.get("title", "").lower()]
+if not matches:
+    raise SystemExit(f"No book matching {needle!r}")
+if len(matches) > 1:
+    raise SystemExit("Ambiguous: " + ", ".join(b["title"] for b in matches))
+book = matches[0]
+today = datetime.date.today().isoformat()
+
+if action == "remove":
+    books.remove(book)
+    print(f"Removed {book['title']}")
+else:
+    total = book.get("totalPages", 1)
+    if action == "read":
+        target = book.get("currentPage", 0) + amount
+    elif action == "page":
+        target = amount
+    else:
+        target = total
+    target = max(0, min(total, target))
+    delta = target - book.get("currentPage", 0)
+    book["currentPage"] = target
+    if delta > 0:
+        log = book.setdefault("log", [])
+        for entry in log:
+            if entry.get("date") == today:
+                entry["pages"] = entry.get("pages", 0) + delta
+                break
+        else:
+            log.append({"date": today, "pages": delta})
+    if target >= total:
+        book["status"] = "finished"
+        book["finished"] = book.get("finished") or today
+    else:
+        book["status"] = "reading"
+        book["finished"] = ""
+    pct = round(100 * target / max(1, total))
+    print(f"{book['title']}: page {target}/{total} ({pct}%)")
+
+lib["version"] = 1
+json.dump(lib, open(path, "w"), indent=2)
+open(path, "a").write("\n")
+PY
+    ;;
+
+  stats) py <<'PY'
+import json, sys, datetime
+lib = json.load(open(sys.argv[1]))
+books = lib.get("books", [])
+today = datetime.date.today()
+def pages_on(day):
+    stamp = day.isoformat()
+    return sum(e.get("pages", 0) for b in books for e in b.get("log", []) if e.get("date") == stamp and e.get("pages", 0) > 0)
+streak = 0
+day = today if pages_on(today) else today - datetime.timedelta(days=1)
+while pages_on(day) > 0:
+    streak += 1
+    day -= datetime.timedelta(days=1)
+week = sum(pages_on(today - datetime.timedelta(days=d)) for d in range(7))
+year = str(today.year)
+print(f"Reading      {sum(1 for b in books if b.get('status') == 'reading')}")
+print(f"Finished {year} {sum(1 for b in books if b.get('status') == 'finished' and str(b.get('finished',''))[:4] == year)}")
+print(f"Pages today  {pages_on(today)}")
+print(f"Pages 7d     {week}")
+print(f"Streak       {streak} days")
+PY
+    ;;
+
+  -h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac

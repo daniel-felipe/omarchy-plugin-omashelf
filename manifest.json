@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.daniel-felipe.omashelf",
+  "name": "Omashelf",
+  "version": "1.0.0",
+  "author": "Daniel Felipe Fagundes",
+  "license": "MIT",
+  "description": "Track what you're reading from the Omarchy bar: current book, remaining percentage, page logging, and a mini reading dashboard.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Omashelf",
+    "description": "Current book progress pill with a reading dashboard and library popup.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "barLabel": "percent",
+      "barTitleLimit": 18,
+      "pageStep": 10,
+      "libraryPath": ""
+    },
+    "schema": [
+      {
+        "key": "barLabel",
+        "type": "enum",
+        "label": "Bar label",
+        "options": ["percent", "title", "both", "icon"],
+        "defaultValue": "percent",
+        "description": "What the bar pill shows for the book you're currently reading."
+      },
+      {
+        "key": "barTitleLimit",
+        "type": "integer",
+        "label": "Max title characters in the bar",
+        "min": 6,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 18
+      },
+      {
+        "key": "pageStep",
+        "type": "integer",
+        "label": "Big page step",
+        "min": 2,
+        "max": 200,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "libraryPath",
+        "type": "path",
+        "label": "Library file",
+        "defaultValue": "",
+        "description": "Blank uses ~/.local/state/omarchy/omashelf/library.json."
+      }
+    ]
+  }
+}
