@@ -147,7 +147,7 @@ treats it as untrusted input and refuses to let it grow without bound:
 
 | Limit | Value | Enforced by |
 | --- | --- | --- |
-| Library file size | 1 MiB | Checked with `stat` *before* the file is read. Over the cap the widget detaches from the file entirely — it loads nothing and writes nothing, shows a warning in the panel, and re-checks every 30s. The CLI exits 1 with the same message. |
+| Library file size | 1 MiB | The widget starts *detached* from the file and attaches only after a `stat` has come back under the cap, so the file is never read before it is measured. Over the cap it stays detached — loads nothing, writes nothing, shows a warning in the panel — and re-checks every 30s. The CLI exits 1 with the same message. |
 | Books | 500 | Extra books are dropped at parse time; `add` refuses past the cap. |
 | Log entries per book | 400 | Oldest entries are dropped on read and on every CLI write. |
 | Title / author length | 300 chars | Truncated at parse time and on `add`. |

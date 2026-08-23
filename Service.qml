@@ -23,13 +23,21 @@ QtObject {
 
   // Refuse to read (or overwrite) a library file that has grown past what the
   // panel is meant to hold. The file is user-writable and the CLI appends to
-  // it, so an oversized or runaway file must not be pulled into the shell
-  // process at all — the size is checked before the contents are ever read.
+  // it, so an oversized or runaway file must never be pulled into the shell
+  // process.
+  //
+  // This is fail-closed by construction: `readable` starts false, so the
+  // FileView below is built with an empty path and is not attached to the
+  // library at all. It is attached only from applyProbe(), i.e. only after a
+  // stat has come back under the cap. Nothing — not startup, not a path
+  // change — can read the file before that check has run.
   readonly property int maxBytes: Library.MAX_BYTES
   readonly property int maxBooks: Library.MAX_BOOKS
   property int fileBytes: 0
-  property bool readable: true
+  property bool readable: false
   property string loadError: ""
+  // Set while a write we made is expected to come back through the watcher.
+  property bool selfWrite: false
 
   readonly property var sorted: Library.sortBooks(books)
   readonly property var stats: Library.stats(books)
@@ -66,30 +74,31 @@ QtObject {
     root.loaded = true
   }
 
-  // Re-stats the file and only then lets FileView touch it.
+  // Detaches FileView from the file, then re-stats it. Detaching first means a
+  // file that grew past the cap since the last check cannot be read by anything
+  // that happens while the probe is in flight.
   function probe() {
-    sizeProbe.running = false
+    root.readable = false
+    if (sizeProbe.running) sizeProbe.running = false
     sizeProbe.running = true
   }
 
+  // The only place that attaches FileView to the library. Reached only with a
+  // size that a stat has already returned.
   function applyProbe(bytes) {
     root.fileBytes = bytes
-    var ok = bytes <= root.maxBytes
-    if (ok && !root.readable) {
-      root.readable = true
-      root.loadError = ""
-      libraryFile.reload()
-      return
-    }
-    if (!ok) {
-      root.readable = false
+    if (bytes > root.maxBytes) {
       root.books = []
       root.currentId = ""
       root.loadError = "too-large"
       root.loaded = true
       return
     }
-    libraryFile.reload()
+    root.loadError = ""
+    // Attaching binds the path, which loads the file; reload() covers the case
+    // where it was already attached with the same path.
+    if (root.readable) libraryFile.reload()
+    else root.readable = true
   }
 
   // Writes are blocked whenever reads are: a file too big to parse is also a
@@ -97,6 +106,10 @@ QtObject {
   function persist(next) {
     if (!root.readable) return
     root.books = next
+    // Our own output is bounded by the same caps parseLibrary enforces, so the
+    // watcher event it causes needs no re-check — and skipping it keeps the
+    // file attached, so rapid edits are never dropped mid-probe.
+    root.selfWrite = true
     libraryFile.setText(Library.serialize(next, root.currentId))
   }
 
@@ -208,19 +221,28 @@ QtObject {
     command: ["mkdir", "-p", root.libraryPath.replace(/\/[^\/]*$/, "")]
   }
 
+  // Always prints a number: the file's size, or 0 when it does not exist yet.
+  // That makes "no output at all" unambiguous — it means the probe did not
+  // actually run, which is never treated as a size.
   property Process sizeProbe: Process {
-    command: ["stat", "-Lc", "%s", root.libraryPath]
+    command: ["sh", "-c", "stat -Lc %s -- \"$1\" 2>/dev/null || echo 0", "sh", root.libraryPath]
     stdout: StdioCollector {
       id: sizeOut
       onStreamFinished: {
-        var n = parseInt(String(sizeOut.text).trim(), 10)
-        root.applyProbe(isFinite(n) && n > 0 ? n : 0)
+        var raw = String(sizeOut.text).trim()
+        // An empty or unparseable result leaves the file detached. The recheck
+        // timer retries, so a probe that never ran fails closed rather than
+        // attaching on a size nobody measured.
+        if (raw === "") return
+        var n = parseInt(raw, 10)
+        if (!isFinite(n) || n < 0) return
+        root.applyProbe(n)
       }
     }
   }
 
-  // While the file is over the cap FileView is detached from it entirely, so
-  // there is no watcher left to tell us it shrank — poll slowly instead.
+  // While detached there is no watcher left to tell us the file shrank back
+  // under the cap, so poll slowly instead.
   property Timer recheck: Timer {
     interval: 30000
     repeat: true
@@ -234,8 +256,14 @@ QtObject {
     atomicWrites: true
     printErrors: false
     onLoaded: root.load(text())
-    onLoadFailed: root.load("")
-    onFileChanged: root.probe()
+    // Only a real read failure clears the shelf. Detaching sets the path to
+    // "" and fails too, and must not be mistaken for an empty library.
+    onLoadFailed: { if (root.readable) root.load("") }
+    onFileChanged: {
+      if (root.selfWrite) { root.selfWrite = false; return }
+      root.probe()
+    }
+    onSaveFailed: root.selfWrite = false
   }
 
   onLibraryPathChanged: root.probe()
