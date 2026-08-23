@@ -7,6 +7,14 @@ set -euo pipefail
 
 LIBRARY="${OMASHELF_LIBRARY:-$HOME/.local/state/omarchy/omashelf/library.json}"
 
+# Same bounds the plugin enforces. The library must stay small enough that the
+# shell can parse it without stalling, so this tool refuses to read a file that
+# is already over the cap and refuses to grow one past it.
+MAX_BYTES=1048576
+MAX_BOOKS=500
+MAX_LOG=400
+MAX_TEXT=300
+
 usage() {
   cat <<'EOF'
 Usage: omashelf <command> [args]
@@ -31,6 +39,15 @@ py() {
   python3 - "$LIBRARY" "$@"
 }
 
+check_size() {
+  local bytes
+  bytes=$(stat -Lc %s "$LIBRARY" 2>/dev/null || echo 0)
+  if (( bytes > MAX_BYTES )); then
+    echo "omashelf: $LIBRARY is ${bytes} bytes, over the ${MAX_BYTES} byte limit — refusing to read or write it" >&2
+    exit 1
+  fi
+}
+
 ensure_library() {
   mkdir -p "$(dirname "$LIBRARY")"
   [[ -f "$LIBRARY" ]] || printf '{\n  "version": 1,\n  "books": []\n}\n' >"$LIBRARY"
@@ -39,6 +56,8 @@ ensure_library() {
 cmd="${1:-list}"
 shift || true
 ensure_library
+check_size
+export OMASHELF_MAX_BOOKS="$MAX_BOOKS" OMASHELF_MAX_LOG="$MAX_LOG" OMASHELF_MAX_TEXT="$MAX_TEXT"
 
 case "$cmd" in
   path) echo "$LIBRARY" ;;
@@ -64,9 +83,16 @@ PY
   add)
     [[ $# -ge 2 ]] || { usage; exit 1; }
     py "$1" "$2" "${3:-}" <<'PY'
-import json, sys, time, random, datetime
+import json, os, sys, time, random, datetime
 path, title, pages, author = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+max_books = int(os.environ["OMASHELF_MAX_BOOKS"])
+max_text = int(os.environ["OMASHELF_MAX_TEXT"])
 lib = json.load(open(path))
+if len(lib.get("books", [])) >= max_books:
+    raise SystemExit(f"omashelf: shelf already holds {max_books} books — remove one first")
+if not 1 <= pages <= 100000:
+    raise SystemExit("omashelf: page count must be between 1 and 100000")
+title, author = title[:max_text], author[:max_text]
 book = {
     "id": "bk-%s-%s" % (format(int(time.time() * 1000), "x"), format(random.randint(0, 10**6), "x")),
     "title": title, "author": author, "totalPages": pages, "currentPage": 0,
@@ -87,7 +113,7 @@ PY
       [[ "${2:-}" =~ ^-?[0-9]+$ ]] || { echo "omashelf $cmd needs a whole number of pages" >&2; exit 1; }
     fi
     py "$cmd" "$1" "${2:-0}" <<'PY'
-import json, sys, datetime
+import json, os, sys, datetime
 path, action, needle, amount = sys.argv[1], sys.argv[2], sys.argv[3].lower(), int(sys.argv[4])
 lib = json.load(open(path))
 books = lib.get("books", [])
@@ -121,6 +147,8 @@ else:
                 break
         else:
             log.append({"date": today, "pages": delta})
+        # Keep the log bounded: only the recent entries feed the dashboard.
+        del log[:max(0, len(log) - int(os.environ["OMASHELF_MAX_LOG"]))]
     if target >= total:
         book["status"] = "finished"
         book["finished"] = book.get("finished") or today

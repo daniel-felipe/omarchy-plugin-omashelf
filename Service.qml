@@ -21,6 +21,16 @@ QtObject {
   property string currentId: ""
   property bool loaded: false
 
+  // Refuse to read (or overwrite) a library file that has grown past what the
+  // panel is meant to hold. The file is user-writable and the CLI appends to
+  // it, so an oversized or runaway file must not be pulled into the shell
+  // process at all — the size is checked before the contents are ever read.
+  readonly property int maxBytes: Library.MAX_BYTES
+  readonly property int maxBooks: Library.MAX_BOOKS
+  property int fileBytes: 0
+  property bool readable: true
+  property string loadError: ""
+
   readonly property var sorted: Library.sortBooks(books)
   readonly property var stats: Library.stats(books)
   readonly property var weekSeries: Library.weekSeries(books)
@@ -52,10 +62,40 @@ QtObject {
     var parsed = Library.parseLibrary(raw)
     root.books = parsed.books
     root.currentId = parsed.currentId
+    root.loadError = parsed.error || ""
     root.loaded = true
   }
 
+  // Re-stats the file and only then lets FileView touch it.
+  function probe() {
+    sizeProbe.running = false
+    sizeProbe.running = true
+  }
+
+  function applyProbe(bytes) {
+    root.fileBytes = bytes
+    var ok = bytes <= root.maxBytes
+    if (ok && !root.readable) {
+      root.readable = true
+      root.loadError = ""
+      libraryFile.reload()
+      return
+    }
+    if (!ok) {
+      root.readable = false
+      root.books = []
+      root.currentId = ""
+      root.loadError = "too-large"
+      root.loaded = true
+      return
+    }
+    libraryFile.reload()
+  }
+
+  // Writes are blocked whenever reads are: a file too big to parse is also a
+  // file we must not clobber with the empty list we fell back to.
   function persist(next) {
+    if (!root.readable) return
     root.books = next
     libraryFile.setText(Library.serialize(next, root.currentId))
   }
@@ -71,6 +111,7 @@ QtObject {
   // ---------------------------------------------------------------- mutation
 
   function addBook(title, author, totalPages) {
+    if (books.length >= root.maxBooks) return ""
     var book = Library.newBook(title, author, totalPages)
     if (!book) return ""
     var next = books.slice()
@@ -167,13 +208,36 @@ QtObject {
     command: ["mkdir", "-p", root.libraryPath.replace(/\/[^\/]*$/, "")]
   }
 
+  property Process sizeProbe: Process {
+    command: ["stat", "-Lc", "%s", root.libraryPath]
+    stdout: StdioCollector {
+      id: sizeOut
+      onStreamFinished: {
+        var n = parseInt(String(sizeOut.text).trim(), 10)
+        root.applyProbe(isFinite(n) && n > 0 ? n : 0)
+      }
+    }
+  }
+
+  // While the file is over the cap FileView is detached from it entirely, so
+  // there is no watcher left to tell us it shrank — poll slowly instead.
+  property Timer recheck: Timer {
+    interval: 30000
+    repeat: true
+    running: !root.readable
+    onTriggered: root.probe()
+  }
+
   property FileView libraryFile: FileView {
-    path: root.libraryPath
+    path: root.readable ? root.libraryPath : ""
     watchChanges: true
     atomicWrites: true
     printErrors: false
     onLoaded: root.load(text())
     onLoadFailed: root.load("")
-    onFileChanged: reload()
+    onFileChanged: root.probe()
   }
+
+  onLibraryPathChanged: root.probe()
+  Component.onCompleted: root.probe()
 }

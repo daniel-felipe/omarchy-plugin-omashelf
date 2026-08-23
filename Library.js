@@ -4,6 +4,14 @@
 
 var VERSION = 1
 
+// Hard bounds. The library file is user-writable (and the CLI appends to it),
+// so nothing downstream may assume it is small or well formed: parsing stops
+// before it can turn a huge or hostile file into a huge object graph.
+var MAX_BYTES = 1048576      // 1 MiB of JSON — thousands of books' worth
+var MAX_BOOKS = 500
+var MAX_LOG_ENTRIES = 400    // per book, keeps the newest
+var MAX_TEXT = 300           // title / author / date field length
+
 function todayStamp(date) {
   var d = date || new Date()
   var m = d.getMonth() + 1
@@ -28,10 +36,18 @@ function makeId() {
   return "bk-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36)
 }
 
+function clampText(value, max) {
+  var s = String(value === undefined || value === null ? "" : value).trim()
+  return s.length > (max || MAX_TEXT) ? s.slice(0, max || MAX_TEXT) : s
+}
+
 function normalizeLog(raw) {
   if (!Array.isArray(raw)) return []
   var out = []
-  for (var i = 0; i < raw.length; i++) {
+  // Only the newest entries can matter to the dashboard, so drop the rest
+  // before doing any per-entry work.
+  var start = Math.max(0, raw.length - MAX_LOG_ENTRIES)
+  for (var i = start; i < raw.length; i++) {
     var entry = raw[i]
     if (!entry || typeof entry !== "object") continue
     var date = String(entry.date || "").trim()
@@ -39,12 +55,12 @@ function normalizeLog(raw) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isFinite(pages) || pages === 0) continue
     out.push({ date: date, pages: pages })
   }
-  return out.slice(-400)
+  return out.slice(-MAX_LOG_ENTRIES)
 }
 
 function normalizeBook(raw) {
   if (!raw || typeof raw !== "object") return null
-  var title = String(raw.title || "").trim()
+  var title = clampText(raw.title)
   if (title === "") return null
   var totalPages = clampInt(raw.totalPages, 1, 100000)
   var currentPage = clampInt(raw.currentPage, 0, totalPages)
@@ -52,29 +68,39 @@ function normalizeBook(raw) {
   if (status !== "reading" && status !== "finished" && status !== "paused" && status !== "wishlist")
     status = currentPage >= totalPages ? "finished" : "reading"
   return {
-    id: String(raw.id || "").trim() || makeId(),
+    id: clampText(raw.id, 64) || makeId(),
     title: title,
-    author: String(raw.author || "").trim(),
+    author: clampText(raw.author),
     totalPages: totalPages,
     currentPage: currentPage,
     status: status,
-    started: String(raw.started || "").trim(),
-    finished: String(raw.finished || "").trim(),
+    started: clampText(raw.started, 10),
+    finished: clampText(raw.finished, 10),
     rating: clampInt(raw.rating, 0, 5),
     log: normalizeLog(raw.log)
   }
 }
 
+function emptyLibrary(error) {
+  return { version: VERSION, books: [], currentId: "", error: error || "" }
+}
+
 function parseLibrary(raw) {
-  var text = String(raw || "").trim()
-  if (text === "") return { version: VERSION, books: [], currentId: "" }
+  var text = String(raw || "")
+  // Size check first: refuse before JSON.parse, not after. Past this point the
+  // work is proportional to the file, so this is the only place it can be
+  // bounded cheaply.
+  if (text.length > MAX_BYTES) return emptyLibrary("too-large")
+  text = text.trim()
+  if (text === "") return emptyLibrary()
   var parsed = null
   try {
     parsed = JSON.parse(text)
   } catch (e) {
-    return { version: VERSION, books: [], currentId: "" }
+    return emptyLibrary("malformed")
   }
   var list = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.books) ? parsed.books : [])
+  if (list.length > MAX_BOOKS) list = list.slice(0, MAX_BOOKS)
   var books = []
   var seen = {}
   for (var i = 0; i < list.length; i++) {
@@ -86,10 +112,10 @@ function parseLibrary(raw) {
   }
   // A currentId pointing at a book that's gone (or finished) is dropped here
   // rather than second-guessed everywhere downstream.
-  var currentId = String((parsed && parsed.currentId) || "").trim()
+  var currentId = clampText(parsed && parsed.currentId, 64)
   if (currentId !== "" && !seen[currentId]) currentId = ""
 
-  return { version: VERSION, books: books, currentId: currentId }
+  return { version: VERSION, books: books, currentId: currentId, error: "" }
 }
 
 function serialize(books, currentId) {

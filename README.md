@@ -140,6 +140,22 @@ omarchy-shell omashelf advance 20 # log 20 pages on the current book
 entries are what the dashboard counts, so streaks and pace only reflect
 progress you actually logged.
 
+### Limits
+
+The library file is plain JSON that you (or the CLI) can edit, so the plugin
+treats it as untrusted input and refuses to let it grow without bound:
+
+| Limit | Value | Enforced by |
+| --- | --- | --- |
+| Library file size | 1 MiB | Checked with `stat` *before* the file is read. Over the cap the widget detaches from the file entirely — it loads nothing and writes nothing, shows a warning in the panel, and re-checks every 30s. The CLI exits 1 with the same message. |
+| Books | 500 | Extra books are dropped at parse time; `add` refuses past the cap. |
+| Log entries per book | 400 | Oldest entries are dropped on read and on every CLI write. |
+| Title / author length | 300 chars | Truncated at parse time and on `add`. |
+
+Because writes are blocked whenever reads are, an oversized library is never
+overwritten with the empty fallback — shrink it below the cap and the widget
+picks it up again on its own.
+
 ## Dependencies
 
 - Omarchy shell (Quickshell) — the plugin host.

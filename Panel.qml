@@ -577,6 +577,18 @@ Panel {
 
           Text {
             width: parent.width
+            visible: shelf.loadError !== ""
+            text: shelf.loadError === "too-large"
+              ? "library file is larger than " + Math.round(shelf.maxBytes / 1024) + " KB — not loaded, and nothing will be written to it"
+              : "library file could not be parsed — fix or remove " + shelf.libraryPath
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
             text: root.pendingDeleteId !== ""
               ? "press x again to remove " + (root.target ? root.target.title : "")
               : "j/k move · enter set current · +/- page · [ ] " + root.pageStep + " pages · a add · f finish · p pause · v finished · x remove"
