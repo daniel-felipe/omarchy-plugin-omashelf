@@ -4,7 +4,8 @@ import Quickshell.Io
 import "Library.js" as Library
 
 // Owns the library file: reads it, writes it, and exposes derived state.
-// The file is watched, so edits made by hand (or by the CLI helper) show up
+// All access goes through the bounded `bin/omashelf-io` helper, which re-checks
+// the file about once a second, so edits made by hand (or by the CLI) show up
 // in the panel without a restart.
 QtObject {
   id: root
@@ -21,23 +22,29 @@ QtObject {
   property string currentId: ""
   property bool loaded: false
 
-  // Refuse to read (or overwrite) a library file that has grown past what the
-  // panel is meant to hold. The file is user-writable and the CLI appends to
-  // it, so an oversized or runaway file must never be pulled into the shell
-  // process.
+  // The library file is user-writable, its path is user-configurable, and the
+  // CLI appends to it, so it is untrusted input: it may be huge, malformed,
+  // replaced between two accesses, a symlink, or not a regular file at all.
   //
-  // This is fail-closed by construction: `readable` starts false, so the
-  // FileView below is built with an empty path and is not attached to the
-  // library at all. It is attached only from applyProbe(), i.e. only after a
-  // stat has come back under the cap. Nothing — not startup, not a path
-  // change — can read the file before that check has run.
+  // Nothing in QML ever opens it. `bin/omashelf-io` is the only reader and the
+  // only writer: it opens the path once with O_NOFOLLOW and O_NONBLOCK, checks
+  // on that same descriptor that it is a regular file within the cap, and reads
+  // at most that many bytes from it. So the bytes that arrive here are always
+  // the bytes that were measured on the descriptor they came from — there is no
+  // window between the check and the read for the path to be swapped.
   readonly property int maxBytes: Library.MAX_BYTES
   readonly property int maxBooks: Library.MAX_BOOKS
   property int fileBytes: 0
-  property bool readable: false
+  // Status reported by the helper: "" until the first check comes back, then
+  // "ok", "missing", "too-large", "not-regular" or "error".
+  property string status: ""
+  // Writable when the file is one we could also read: a file too big (or too
+  // strange) to parse is also a file we must not clobber with our fallback.
+  readonly property bool readable: status === "ok" || status === "missing"
   property string loadError: ""
-  // Set while a write we made is expected to come back through the watcher.
-  property bool selfWrite: false
+  // Set while we are stopping the helper on purpose, so a deliberate restart is
+  // not reported as the helper dying.
+  property bool restarting: false
 
   readonly property var sorted: Library.sortBooks(books)
   readonly property var stats: Library.stats(books)
@@ -74,43 +81,27 @@ QtObject {
     root.loaded = true
   }
 
-  // Detaches FileView from the file, then re-stats it. Detaching first means a
-  // file that grew past the cap since the last check cannot be read by anything
-  // that happens while the probe is in flight.
-  function probe() {
-    root.readable = false
-    if (sizeProbe.running) sizeProbe.running = false
-    sizeProbe.running = true
-  }
-
-  // The only place that attaches FileView to the library. Reached only with a
-  // size that a stat has already returned.
-  function applyProbe(bytes) {
-    root.fileBytes = bytes
-    if (bytes > root.maxBytes) {
-      root.books = []
-      root.currentId = ""
-      root.loadError = "too-large"
-      root.loaded = true
+  // Applies one state event from the helper. Everything that is not a clean
+  // read of a bounded regular file leaves the shelf empty and says why.
+  function applyState(event) {
+    root.status = String(event.status || "error")
+    root.fileBytes = parseInt(event.bytes, 10) || 0
+    if (root.status === "ok") {
+      root.load(String(event.text || ""))
       return
     }
-    root.loadError = ""
-    // Attaching binds the path, which loads the file; reload() covers the case
-    // where it was already attached with the same path.
-    if (root.readable) libraryFile.reload()
-    else root.readable = true
+    root.books = []
+    root.currentId = ""
+    root.loadError = root.status === "missing" ? "" : root.status
+    root.loaded = true
   }
 
-  // Writes are blocked whenever reads are: a file too big to parse is also a
-  // file we must not clobber with the empty list we fell back to.
+  // Writes are blocked whenever reads are, and the helper refuses anything over
+  // the cap on its side too.
   function persist(next) {
     if (!root.readable) return
     root.books = next
-    // Our own output is bounded by the same caps parseLibrary enforces, so the
-    // watcher event it causes needs no re-check — and skipping it keeps the
-    // file attached, so rapid edits are never dropped mid-probe.
-    root.selfWrite = true
-    libraryFile.setText(Library.serialize(next, root.currentId))
+    ioProc.request({ cmd: "write", text: Library.serialize(next, root.currentId) })
   }
 
   // Pinning a book is state worth keeping, so it goes through the file like
@@ -214,58 +205,80 @@ QtObject {
     persist(next)
   }
 
-  // FileView won't create the directory for us, and the first write happens
-  // whenever the user adds a book — so make the parent up front.
+  // The helper writes into this directory, and the first write happens whenever
+  // the user adds a book — so make the parent up front.
   property Process ensureDir: Process {
     running: true
     command: ["mkdir", "-p", root.libraryPath.replace(/\/[^\/]*$/, "")]
   }
 
-  // Always prints a number: the file's size, or 0 when it does not exist yet.
-  // That makes "no output at all" unambiguous — it means the probe did not
-  // actually run, which is never treated as a size.
-  property Process sizeProbe: Process {
-    command: ["sh", "-c", "stat -Lc %s -- \"$1\" 2>/dev/null || echo 0", "sh", root.libraryPath]
-    stdout: StdioCollector {
-      id: sizeOut
-      onStreamFinished: {
-        var raw = String(sizeOut.text).trim()
-        // An empty or unparseable result leaves the file detached. The recheck
-        // timer retries, so a probe that never ran fails closed rather than
-        // attaching on a size nobody measured.
-        if (raw === "") return
-        var n = parseInt(raw, 10)
-        if (!isFinite(n) || n < 0) return
-        root.applyProbe(n)
+  readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
+
+  // Single long-lived helper: it re-checks the file about once a second and
+  // emits one JSON line per change, so the widget follows CLI edits without
+  // ever opening the file itself.
+  property Process io: Process {
+    id: ioProc
+    running: true
+    stdinEnabled: true
+    command: ["python3", root.pluginDir + "bin/omashelf-io", root.libraryPath, String(root.maxBytes)]
+
+    function request(command) {
+      if (!ioProc.running) return
+      ioProc.write(JSON.stringify(command) + "\n")
+    }
+
+    // If the helper dies we are blind to the file, so say so rather than
+    // showing a stale shelf, and bring it back.
+    onExited: {
+      if (!root.restarting) {
+        root.status = "error"
+        root.loadError = "error"
+        root.loaded = true
+      }
+      root.restarting = false
+      restartTimer.restart()
+    }
+
+    stderr: StdioCollector {
+      id: ioErr
+      onStreamFinished: { if (String(ioErr.text).trim() !== "") console.warn("omashelf: helper: " + String(ioErr.text).trim()) }
+    }
+
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) {
+        var text = String(line).trim()
+        if (text === "") return
+        var event = null
+        try { event = JSON.parse(text) } catch (e) { return }
+        if (!event || event.event !== "state") return
+        root.applyState(event)
       }
     }
   }
 
-  // While detached there is no watcher left to tell us the file shrank back
-  // under the cap, so poll slowly instead.
-  property Timer recheck: Timer {
-    interval: 30000
-    repeat: true
-    running: !root.readable
-    onTriggered: root.probe()
+  property Timer restartTimer: Timer {
+    id: restartTimer
+    interval: 1000
+    repeat: false
+    onTriggered: ioProc.running = true
   }
 
-  property FileView libraryFile: FileView {
-    path: root.readable ? root.libraryPath : ""
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.load(text())
-    // Only a real read failure clears the shelf. Detaching sets the path to
-    // "" and fails too, and must not be mistaken for an empty library.
-    onLoadFailed: { if (root.readable) root.load("") }
-    onFileChanged: {
-      if (root.selfWrite) { root.selfWrite = false; return }
-      root.probe()
-    }
-    onSaveFailed: root.selfWrite = false
-  }
+  // Objects held in a property are created lazily, so touch the helper here to
+  // make sure it is running from the moment the widget exists.
+  Component.onCompleted: ioProc.running = true
 
-  onLibraryPathChanged: root.probe()
-  Component.onCompleted: root.probe()
+  // A new path is a different file: drop what the old one gave us and restart
+  // the helper against the new one.
+  onLibraryPathChanged: {
+    root.status = ""
+    root.books = []
+    root.currentId = ""
+    root.loaded = false
+    // Stopping is enough: onExited schedules the restart, and by then the
+    // command binding has picked up the new path.
+    root.restarting = true
+    ioProc.running = false
+  }
 }

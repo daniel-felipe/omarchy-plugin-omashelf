@@ -147,21 +147,24 @@ treats it as untrusted input and refuses to let it grow without bound:
 
 | Limit | Value | Enforced by |
 | --- | --- | --- |
-| Library file size | 1 MiB | The widget starts *detached* from the file and attaches only after a `stat` has come back under the cap, so the file is never read before it is measured. Over the cap it stays detached — loads nothing, writes nothing, shows a warning in the panel — and re-checks every 30s. The CLI exits 1 with the same message. |
+| Library file size | 1 MiB | The widget never opens the file itself. `bin/omashelf-io` opens the path once with `O_NOFOLLOW`/`O_NONBLOCK`, verifies on that descriptor that it is a regular file within the cap, and passes only those bounded bytes to the widget — so the bytes read are always the bytes that were measured. Over the cap (or not a regular file) nothing is loaded, nothing is written, and the panel says why; it re-checks about once a second. The CLI exits 1 with the same message. |
 | Books | 500 | Extra books are dropped at parse time; `add` refuses past the cap. |
 | Log entries per book | 400 | Oldest entries are dropped on read and on every CLI write. |
 | Title / author length | 300 chars | Truncated at parse time and on `add`. |
 
 Because writes are blocked whenever reads are, an oversized library is never
 overwritten with the empty fallback — shrink it below the cap and the widget
-picks it up again on its own.
+picks it up again on its own. Writes go through the same helper: it refuses
+anything over the cap, refuses a path that is not already a regular file, and
+writes to a fresh file in the same directory that it renames into place, so the
+library is never left half written.
 
 ## Dependencies
 
 - Omarchy shell (Quickshell) — the plugin host.
 - A Nerd Font for the icons; Omarchy ships one by default.
-- `python3` — only for the optional `bin/omashelf` CLI. The widget itself
-  needs nothing beyond the shell.
+- `python3` — used by `bin/omashelf-io`, the helper the widget reads and writes
+  the library file through, and by the optional `bin/omashelf` CLI.
 
 ## License
 

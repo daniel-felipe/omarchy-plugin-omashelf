@@ -580,7 +580,11 @@ Panel {
             visible: shelf.loadError !== ""
             text: shelf.loadError === "too-large"
               ? "library file is larger than " + Math.round(shelf.maxBytes / 1024) + " KB — not loaded, and nothing will be written to it"
-              : "library file could not be parsed — fix or remove " + shelf.libraryPath
+              : shelf.loadError === "not-regular"
+                ? "library path is not a regular file — not read, and nothing will be written to it: " + shelf.libraryPath
+                : shelf.loadError === "error"
+                  ? "library file could not be read — check " + shelf.libraryPath
+                  : "library file could not be parsed — fix or remove " + shelf.libraryPath
             color: root.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

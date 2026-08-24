@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.daniel-felipe.omashelf",
   "name": "Omashelf",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "Daniel Felipe Fagundes",
   "license": "MIT",
   "description": "Track what you're reading from the Omarchy bar: current book, remaining percentage, page logging, and a mini reading dashboard.",
