@@ -153,8 +153,8 @@ treats it as untrusted input and refuses to let it grow without bound:
 | Title / author length | 300 chars | Truncated at parse time and on `add`. |
 | Markup in any label | removed | `<` and `>` are stripped from titles, authors and ids, along with control and bidi-override characters. Labels in the shell are painted by `Text` elements using Qt's default rich-text autodetection, so a title shaped like `<img src="http://…">` would otherwise make the shell fetch it. Stripping the angle brackets is what stops that detection; the plugin's own `Text` elements also set `textFormat: Text.PlainText`. The CLI applies the same rule, which additionally keeps a title carrying an ANSI escape from rewriting the terminal that ran `omashelf list`. |
 
-Because writes are blocked whenever reads are, an oversized library is never
-overwritten with the empty fallback — shrink it below the cap and the widget
+Because writes are blocked whenever reads are, a library the plugin cannot read
+or cannot parse is never overwritten with the empty fallback — shrink it below the cap and the widget
 picks it up again on its own. Writes go through the same helper: it refuses
 anything over the cap, refuses a path that is not already a regular file, and
 writes to a fresh file in the same directory that it renames into place, so the

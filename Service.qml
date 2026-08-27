@@ -21,8 +21,9 @@ QtObject {
   readonly property int maxBytes: Library.MAX_BYTES
   readonly property int maxBooks: Library.MAX_BOOKS
   property string status: ""
-  // A file too strange to read is also one we must not clobber with our fallback.
-  readonly property bool readable: status === "ok" || status === "missing"
+  // A file we could not read, or could not parse, is one we must not clobber
+  // with our fallback: whatever is in it, it is not ours to replace.
+  readonly property bool readable: (status === "ok" && loadError === "") || status === "missing"
   property string loadError: ""
   property string writeError: ""
   property bool restarting: false
