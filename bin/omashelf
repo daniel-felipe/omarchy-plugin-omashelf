@@ -71,6 +71,8 @@ def plain(value, cap=None):
     dropping the control characters keeps a title carrying an ANSI escape from
     rewriting the terminal that ran `omashelf list`.
     """
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
     out = []
     for ch in str(value):
         if ch in _STRIP:

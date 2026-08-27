@@ -34,7 +34,8 @@ function makeId() {
 // autodetection, so a title shaped like markup makes the shell fetch what it
 // points at. Stripping "<" and ">" is what stops that detection.
 function plainText(value) {
-  var s = String(value === undefined || value === null ? "" : value)
+  if (typeof value !== "string" && typeof value !== "number") return ""
+  var s = String(value)
   return s.replace(/[<>]/g, "")
           .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
           .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
