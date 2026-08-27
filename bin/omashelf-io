@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """Bounded reader/writer for the Omashelf library file.
 
-The library path is user-configurable and the file it points at is user-writable,
-so the widget must never hand that path to a reader that opens it a second time:
-between a size check and a later open, the path can be replaced with an
-oversized file, a symlink pointing somewhere else, or a blocking special file.
-
-This helper is the only thing that touches the library. Every access opens the
-path exactly once with O_NOFOLLOW and O_NONBLOCK, verifies on that descriptor
-that it is a regular file within the byte cap, and reads at most cap bytes from
-that same descriptor. The bytes handed to QML are therefore always the bytes
-that were measured, and nothing else is ever materialized in the shell process.
+The only thing that opens the library. Every access opens the path once with
+O_NOFOLLOW and O_NONBLOCK, verifies on that descriptor that it is a regular file
+within the byte cap, and reads at most cap bytes from that same descriptor, so
+the bytes handed to the widget are always the bytes that were measured. Checking
+the path and opening it separately would leave a window to swap it.
 
 Usage: omashelf-io <library-path> <max-bytes>
 
@@ -45,9 +40,8 @@ def emit(obj):
 def read_bounded(path, cap):
     """Open once, verify the descriptor, then read from that descriptor only.
 
-    Returns (status, data, identity). `identity` is what the poll loop compares
-    to decide whether anything changed; it is taken from the same fstat that
-    authorized the read, so a replaced file always looks different.
+    `identity` comes from the fstat that authorized the read, so the poll loop
+    sees a replaced file as a change.
     """
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     try:
@@ -56,7 +50,6 @@ def read_bounded(path, cap):
         if exc.errno == errno.ENOENT:
             return "missing", "", None
         if exc.errno in (errno.ELOOP, errno.EMLINK):
-            # The final path component is a symlink; O_NOFOLLOW refused it.
             return "not-regular", "", None
         return "error", "", None
 
@@ -67,9 +60,8 @@ def read_bounded(path, cap):
         identity = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
         if st.st_size > cap:
             return "too-large", "", identity
-        # Verified regular and within the cap on this descriptor, so reading it
-        # cannot block and cannot exceed the cap. Read one byte past the cap so a
-        # file that grew after the fstat is still rejected rather than truncated.
+        # One byte past the cap, so a file that grew after the fstat is
+        # rejected rather than truncated.
         os.set_blocking(fd, True)
         chunks = []
         remaining = cap + 1
@@ -97,17 +89,11 @@ def state_event(status, text, size):
 
 
 def write_library(path, cap, text):
-    """Replace the library atomically, refusing to write past the cap.
-
-    Written to a fresh file in the same directory and renamed into place, so the
-    library is never left half written. A path that is not already a regular
-    file is refused rather than replaced.
-    """
+    """Replace the library atomically, refusing to write past the cap."""
     payload = text.encode("utf-8")
     if len(payload) > cap:
         return False, "refusing to write %d bytes, over the %d byte cap" % (len(payload), cap)
-    # Refuse to replace anything that is not already a plain library file: a
-    # symlink, fifo or device at that path is the user's, not ours to clobber.
+    # A symlink, fifo or device at that path is the user's, not ours to clobber.
     try:
         existing = os.lstat(path)
     except OSError as exc:
@@ -152,8 +138,7 @@ def main():
         sys.stderr.write("omashelf-io: max-bytes must be positive\n")
         return 2
 
-    last = object()  # Sentinel: never equal to a real identity, so the first
-                     # poll always emits a state event.
+    last = object()  # Never equal to a real identity, so the first poll emits.
 
     def check(force=False):
         nonlocal last
@@ -175,7 +160,7 @@ def main():
             continue
         line = stdin.readline()
         if line == "":
-            return 0  # Shell closed our stdin; nothing left to serve.
+            return 0
         line = line.strip()
         if line == "":
             continue

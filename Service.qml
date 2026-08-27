@@ -3,10 +3,6 @@ import Quickshell
 import Quickshell.Io
 import "Library.js" as Library
 
-// Owns the library file: reads it, writes it, and exposes derived state.
-// All access goes through the bounded `bin/omashelf-io` helper, which re-checks
-// the file about once a second, so edits made by hand (or by the CLI) show up
-// in the panel without a restart.
 QtObject {
   id: root
 
@@ -22,28 +18,13 @@ QtObject {
   property string currentId: ""
   property bool loaded: false
 
-  // The library file is user-writable, its path is user-configurable, and the
-  // CLI appends to it, so it is untrusted input: it may be huge, malformed,
-  // replaced between two accesses, a symlink, or not a regular file at all.
-  //
-  // Nothing in QML ever opens it. `bin/omashelf-io` is the only reader and the
-  // only writer: it opens the path once with O_NOFOLLOW and O_NONBLOCK, checks
-  // on that same descriptor that it is a regular file within the cap, and reads
-  // at most that many bytes from it. So the bytes that arrive here are always
-  // the bytes that were measured on the descriptor they came from — there is no
-  // window between the check and the read for the path to be swapped.
   readonly property int maxBytes: Library.MAX_BYTES
   readonly property int maxBooks: Library.MAX_BOOKS
   property int fileBytes: 0
-  // Status reported by the helper: "" until the first check comes back, then
-  // "ok", "missing", "too-large", "not-regular" or "error".
   property string status: ""
-  // Writable when the file is one we could also read: a file too big (or too
-  // strange) to parse is also a file we must not clobber with our fallback.
+  // A file too strange to read is also one we must not clobber with our fallback.
   readonly property bool readable: status === "ok" || status === "missing"
   property string loadError: ""
-  // Set while we are stopping the helper on purpose, so a deliberate restart is
-  // not reported as the helper dying.
   property bool restarting: false
 
   readonly property var sorted: Library.sortBooks(books)
@@ -52,8 +33,6 @@ QtObject {
   readonly property var reading: books.filter(function(b) { return b.status === "reading" })
   readonly property var finished: books.filter(function(b) { return b.status === "finished" })
 
-  // The book the bar pill talks about: the explicitly selected one when it is
-  // still in progress, otherwise the furthest-along active read.
   readonly property var current: {
     var explicit = findBook(currentId)
     if (explicit && explicit.status === "reading") return explicit
@@ -81,8 +60,6 @@ QtObject {
     root.loaded = true
   }
 
-  // Applies one state event from the helper. Everything that is not a clean
-  // read of a bounded regular file leaves the shelf empty and says why.
   function applyState(event) {
     root.status = String(event.status || "error")
     root.fileBytes = parseInt(event.bytes, 10) || 0
@@ -96,23 +73,17 @@ QtObject {
     root.loaded = true
   }
 
-  // Writes are blocked whenever reads are, and the helper refuses anything over
-  // the cap on its side too.
   function persist(next) {
     if (!root.readable) return
     root.books = next
     ioProc.request({ cmd: "write", text: Library.serialize(next, root.currentId) })
   }
 
-  // Pinning a book is state worth keeping, so it goes through the file like
-  // every other change instead of living only in this shell session.
   function setCurrent(id) {
     if (root.currentId === id) return
     root.currentId = id
     persist(root.books)
   }
-
-  // ---------------------------------------------------------------- mutation
 
   function addBook(title, author, totalPages) {
     if (books.length >= root.maxBooks) return ""
@@ -125,8 +96,6 @@ QtObject {
     return book.id
   }
 
-  // Moves the bookmark and records the delta in today's log so the dashboard
-  // (streak, pages today, pace) has something to count.
   function setPage(id, page) {
     var index = indexOf(id)
     if (index < 0) return
@@ -205,8 +174,6 @@ QtObject {
     persist(next)
   }
 
-  // The helper writes into this directory, and the first write happens whenever
-  // the user adds a book — so make the parent up front.
   property Process ensureDir: Process {
     running: true
     command: ["mkdir", "-p", root.libraryPath.replace(/\/[^\/]*$/, "")]
@@ -214,9 +181,6 @@ QtObject {
 
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
 
-  // Single long-lived helper: it re-checks the file about once a second and
-  // emits one JSON line per change, so the widget follows CLI edits without
-  // ever opening the file itself.
   property Process io: Process {
     id: ioProc
     running: true
@@ -228,8 +192,6 @@ QtObject {
       ioProc.write(JSON.stringify(command) + "\n")
     }
 
-    // If the helper dies we are blind to the file, so say so rather than
-    // showing a stale shelf, and bring it back.
     onExited: {
       if (!root.restarting) {
         root.status = "error"
@@ -265,19 +227,15 @@ QtObject {
     onTriggered: ioProc.running = true
   }
 
-  // Objects held in a property are created lazily, so touch the helper here to
-  // make sure it is running from the moment the widget exists.
+  // Properties hold their objects lazily, so touch the helper to start it.
   Component.onCompleted: ioProc.running = true
 
-  // A new path is a different file: drop what the old one gave us and restart
-  // the helper against the new one.
   onLibraryPathChanged: {
     root.status = ""
     root.books = []
     root.currentId = ""
     root.loaded = false
-    // Stopping is enough: onExited schedules the restart, and by then the
-    // command binding has picked up the new path.
+    // onExited schedules the restart, by which time command has the new path.
     root.restarting = true
     ioProc.running = false
   }

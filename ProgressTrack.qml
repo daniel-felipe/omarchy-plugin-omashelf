@@ -1,8 +1,6 @@
 import QtQuick
 import qs.Commons
 
-// Flat theme-aware progress track. `value` is 0..1. The fill animates so
-// bumping a page count reads as motion rather than a jump.
 Rectangle {
   id: root
 

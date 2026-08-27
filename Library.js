@@ -1,16 +1,9 @@
-// Pure helpers for the omashelf library file. No QML types, no side effects —
-// everything here is testable with plain JS and shared by Service.qml and
-// Panel.qml.
-
 var VERSION = 1
 
-// Hard bounds. The library file is user-writable (and the CLI appends to it),
-// so nothing downstream may assume it is small or well formed: parsing stops
-// before it can turn a huge or hostile file into a huge object graph.
-var MAX_BYTES = 1048576      // 1 MiB of JSON — thousands of books' worth
+var MAX_BYTES = 1048576
 var MAX_BOOKS = 500
-var MAX_LOG_ENTRIES = 400    // per book, keeps the newest
-var MAX_TEXT = 300           // title / author / date field length
+var MAX_LOG_ENTRIES = 400
+var MAX_TEXT = 300
 
 function todayStamp(date) {
   var d = date || new Date()
@@ -44,8 +37,6 @@ function clampText(value, max) {
 function normalizeLog(raw) {
   if (!Array.isArray(raw)) return []
   var out = []
-  // Only the newest entries can matter to the dashboard, so drop the rest
-  // before doing any per-entry work.
   var start = Math.max(0, raw.length - MAX_LOG_ENTRIES)
   for (var i = start; i < raw.length; i++) {
     var entry = raw[i]
@@ -87,9 +78,6 @@ function emptyLibrary(error) {
 
 function parseLibrary(raw) {
   var text = String(raw || "")
-  // Size check first: refuse before JSON.parse, not after. Past this point the
-  // work is proportional to the file, so this is the only place it can be
-  // bounded cheaply.
   if (text.length > MAX_BYTES) return emptyLibrary("too-large")
   text = text.trim()
   if (text === "") return emptyLibrary()
@@ -110,8 +98,6 @@ function parseLibrary(raw) {
     seen[book.id] = true
     books.push(book)
   }
-  // A currentId pointing at a book that's gone (or finished) is dropped here
-  // rather than second-guessed everywhere downstream.
   var currentId = clampText(parsed && parsed.currentId, 64)
   if (currentId !== "" && !seen[currentId]) currentId = ""
 
@@ -135,8 +121,6 @@ function newBook(title, author, totalPages) {
   })
 }
 
-// ------------------------------------------------------------------ derived
-
 function percent(book) {
   if (!book || !book.totalPages) return 0
   return Math.max(0, Math.min(1, book.currentPage / book.totalPages))
@@ -155,8 +139,6 @@ function isActive(book) {
   return book && book.status === "reading"
 }
 
-// Pages/day over the last `days` days, counted from log entries. Used to
-// project a finish date; zero means "not enough signal to guess".
 function paceForBook(book, days) {
   if (!book || !Array.isArray(book.log) || book.log.length === 0) return 0
   var cutoff = dayOffset(todayStamp(), -(days || 14))
@@ -195,8 +177,6 @@ function pagesOn(books, stamp) {
   return total
 }
 
-// Consecutive days with reading activity, ending today or yesterday (so a
-// streak isn't broken until you've actually missed a whole day).
 function streakDays(books) {
   var stamp = todayStamp()
   if (pagesOn(books, stamp) === 0) {
@@ -241,7 +221,6 @@ function stats(books) {
   }
 }
 
-// Seven-day sparkline, oldest first, normalized 0..1 against the busiest day.
 function weekSeries(books) {
   var list = Array.isArray(books) ? books : []
   var raw = []

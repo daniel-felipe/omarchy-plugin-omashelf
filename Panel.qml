@@ -7,15 +7,12 @@ import qs.Commons
 import qs.Ui
 import "Library.js" as Library
 
-// Omashelf: a bar pill showing how far you are into what you're reading,
-// backed by a popup with a reading dashboard and the whole library.
 Panel {
   id: root
   moduleName: "io.github.daniel-felipe.omashelf"
   ipcTarget: "omashelf"
   manageIpc: false
 
-  // ------------------------------------------------------------- appearance
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color accent: Color.accent
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -25,7 +22,6 @@ Panel {
   readonly property int titleLimit: setting("barTitleLimit", 18)
   readonly property int pageStep: Math.max(1, setting("pageStep", 10))
 
-  // ------------------------------------------------------------------ state
   property string focusSection: "books"
   property int bookIndex: 0
   property bool cursorActive: false
@@ -45,9 +41,6 @@ Panel {
   }
   readonly property var selected: rows.length > 0 ? rows[Math.max(0, Math.min(bookIndex, rows.length - 1))] : null
 
-  // Everything that acts on "a book" — page buttons, finish, the keyboard —
-  // agrees on this one: the highlighted row once the cursor is live, and the
-  // current read otherwise.
   readonly property var target: (opened && cursorActive && focusSection === "books" && selected) ? selected : current
 
   readonly property string barLabel: {
@@ -67,7 +60,6 @@ Panel {
       + " (" + Library.percentText(current) + ")" + (eta !== "" ? " · " + eta : "")
   }
 
-  // -------------------------------------------------------------- navigation
   function ensureCursor() {
     if (adding) { focusSection = "add"; return }
     if (focusSection === "add") focusSection = "books"
@@ -90,7 +82,6 @@ Panel {
     bookIndex = index
   }
 
-  // Enter promotes the highlighted book to "what I'm reading now".
   function activateCursor() {
     if (focusSection !== "books" || !selected) return
     shelf.setCurrent(selected.id)
@@ -119,8 +110,7 @@ Panel {
     })
   }
 
-  // `x` arms the delete and a second `x` performs it. The panel grabs the
-  // keyboard while open, so a stray keystroke must not destroy a book.
+  // The panel holds the keyboard while open, so a stray `x` must not delete.
   function requestDelete() {
     if (!target) return
     if (pendingDeleteId === target.id) {
@@ -261,7 +251,6 @@ Panel {
           width: panelFlick.width
           spacing: Style.space(12)
 
-          // ------------------------------------------------------- now reading
           PanelHero {
             id: hero
             width: parent.width
@@ -321,8 +310,6 @@ Panel {
             }
           }
 
-          // Page controls for whichever book the cursor is on (falls back to
-          // the current read), so you can log progress without leaving the bar.
           RowLayout {
             visible: !!root.target
             width: parent.width
@@ -361,8 +348,6 @@ Panel {
               onClicked: root.bumpCurrent(root.pageStep)
             }
 
-            // Names the book the buttons act on once the cursor has moved off
-            // the current read, so a click can't land on the wrong book.
             Text {
               Layout.fillWidth: true
               horizontalAlignment: Text.AlignHCenter
@@ -391,7 +376,6 @@ Panel {
 
           PanelSeparator { width: parent.width; foreground: root.foreground }
 
-          // ----------------------------------------------------- mini dashboard
           PanelSectionHeader {
             text: "DASHBOARD"
             foreground: root.foreground
@@ -409,7 +393,6 @@ Panel {
             StatTile { label: "DONE " + Library.todayStamp().slice(2, 4); value: String(shelf.stats.finishedThisYear) }
           }
 
-          // Seven-day bar chart of pages logged, oldest on the left.
           Item {
             width: parent.width
             implicitHeight: Style.space(46)
@@ -453,7 +436,6 @@ Panel {
 
           PanelSeparator { width: parent.width; foreground: root.foreground }
 
-          // -------------------------------------------------------- the shelf
           RowLayout {
             width: parent.width
             spacing: Style.space(4)
@@ -508,7 +490,6 @@ Panel {
             }
           }
 
-          // --------------------------------------------------------- add form
           Column {
             visible: root.adding
             width: parent.width
@@ -605,8 +586,6 @@ Panel {
       }
     }
   }
-
-  // ------------------------------------------------------------- components
 
   component StatTile: Rectangle {
     property string label: ""
