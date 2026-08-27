@@ -27,6 +27,7 @@ QtObject {
   property string loadError: ""
   property string writeError: ""
   property bool restarting: false
+  property int helperNoise: 0
 
   readonly property var sorted: Library.sortBooks(books)
   readonly property var stats: Library.stats(books)
@@ -64,6 +65,7 @@ QtObject {
   function applyState(event) {
     root.status = String(event.status || "error")
     root.restartDelay = 1000
+    root.helperNoise = 0
     if (root.status === "ok") {
       root.load(String(event.text || ""))
       return
@@ -207,9 +209,17 @@ QtObject {
       restartTimer.restart()
     }
 
-    stderr: StdioCollector {
-      id: ioErr
-      onStreamFinished: { if (String(ioErr.text).trim() !== "") console.warn("omashelf: helper: " + String(ioErr.text).trim()) }
+    // Collecting this would buffer everything the helper ever writes until it
+    // exits. Log a bounded number of lines and keep none of it.
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) {
+        if (root.helperNoise >= 20) return
+        var text = String(line).trim()
+        if (text === "") return
+        root.helperNoise += 1
+        console.warn("omashelf: helper: " + text.slice(0, 400))
+      }
     }
 
     stdout: SplitParser {
