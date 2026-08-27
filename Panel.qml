@@ -565,14 +565,21 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            visible: shelf.loadError !== ""
-            text: shelf.loadError === "too-large"
-              ? "library file is larger than " + Math.round(shelf.maxBytes / 1024) + " KB — not loaded, and nothing will be written to it"
-              : shelf.loadError === "not-regular"
-                ? "library path is not a regular file — not read, and nothing will be written to it: " + shelf.libraryPath
-                : shelf.loadError === "error"
-                  ? "library file could not be read — check " + shelf.libraryPath
-                  : "library file could not be parsed — fix or remove " + shelf.libraryPath
+            visible: text !== ""
+            text: {
+              if (shelf.writeError === "too-large")
+                return "the library is too large to save — that change was not written; remove a book or trim its history"
+              if (shelf.writeError !== "")
+                return "that change could not be saved — the shelf below is what is on disk"
+              if (shelf.loadError === "") return ""
+              if (shelf.loadError === "too-large")
+                return "library file is larger than " + Math.round(shelf.maxBytes / 1024) + " KB — not loaded, and nothing will be written to it"
+              if (shelf.loadError === "not-regular")
+                return "library path is not a regular file — not read, and nothing will be written to it: " + shelf.libraryPath
+              if (shelf.loadError === "error")
+                return "library file could not be read — check " + shelf.libraryPath
+              return "library file could not be parsed — fix or remove " + shelf.libraryPath
+            }
             color: root.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

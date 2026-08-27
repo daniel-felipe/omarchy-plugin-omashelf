@@ -25,6 +25,7 @@ QtObject {
   // A file too strange to read is also one we must not clobber with our fallback.
   readonly property bool readable: status === "ok" || status === "missing"
   property string loadError: ""
+  property string writeError: ""
   property bool restarting: false
 
   readonly property var sorted: Library.sortBooks(books)
@@ -214,7 +215,13 @@ QtObject {
         if (text === "") return
         var event = null
         try { event = JSON.parse(text) } catch (e) { return }
-        if (!event || event.event !== "state") return
+        if (!event) return
+        if (event.event === "write") {
+          root.writeError = event.ok ? "" : "refused"
+          if (!event.ok) console.warn("omashelf: write refused: " + String(event.message || ""))
+          return
+        }
+        if (event.event !== "state") return
         root.applyState(event)
       }
     }
@@ -234,6 +241,8 @@ QtObject {
     root.status = ""
     root.books = []
     root.currentId = ""
+    root.loadError = ""
+    root.writeError = ""
     root.loaded = false
     // onExited schedules the restart, by which time command has the new path.
     root.restarting = true
