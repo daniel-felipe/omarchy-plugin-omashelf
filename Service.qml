@@ -64,6 +64,7 @@ QtObject {
   function applyState(event) {
     root.status = String(event.status || "error")
     root.fileBytes = parseInt(event.bytes, 10) || 0
+    root.restartDelay = 1000
     if (root.status === "ok") {
       root.load(String(event.text || ""))
       return
@@ -206,6 +207,7 @@ QtObject {
         root.status = "error"
         root.loadError = "error"
         root.loaded = true
+        root.restartDelay = Math.min(root.restartDelay * 2, 60000)
       }
       root.restarting = false
       restartTimer.restart()
@@ -235,9 +237,11 @@ QtObject {
     }
   }
 
+  property int restartDelay: 1000
+
   property Timer restartTimer: Timer {
     id: restartTimer
-    interval: 1000
+    interval: root.restartDelay
     repeat: false
     onTriggered: ioProc.running = true
   }
@@ -252,6 +256,7 @@ QtObject {
     root.loadError = ""
     root.writeError = ""
     root.loaded = false
+    root.restartDelay = 1000
     // onExited schedules the restart, by which time command has the new path.
     root.restarting = true
     ioProc.running = false
