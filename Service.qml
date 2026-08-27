@@ -184,11 +184,6 @@ QtObject {
     persist(next)
   }
 
-  property Process ensureDir: Process {
-    running: true
-    command: ["mkdir", "-p", root.libraryPath.replace(/\/[^\/]*$/, "")]
-  }
-
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
 
   property Process io: Process {

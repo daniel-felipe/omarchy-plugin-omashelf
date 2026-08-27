@@ -103,6 +103,10 @@ def write_library(path, cap, text):
         if not stat.S_ISREG(existing.st_mode):
             return False, "refusing to replace a path that is not a regular file"
     directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        return False, str(exc)
     tmp = os.path.join(directory, ".omashelf-%d.tmp" % os.getpid())
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
