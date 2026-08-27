@@ -20,7 +20,6 @@ QtObject {
 
   readonly property int maxBytes: Library.MAX_BYTES
   readonly property int maxBooks: Library.MAX_BOOKS
-  property int fileBytes: 0
   property string status: ""
   // A file too strange to read is also one we must not clobber with our fallback.
   readonly property bool readable: status === "ok" || status === "missing"
@@ -63,7 +62,6 @@ QtObject {
 
   function applyState(event) {
     root.status = String(event.status || "error")
-    root.fileBytes = parseInt(event.bytes, 10) || 0
     root.restartDelay = 1000
     if (root.status === "ok") {
       root.load(String(event.text || ""))
