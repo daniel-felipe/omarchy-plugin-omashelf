@@ -29,9 +29,20 @@ function makeId() {
   return "bk-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36)
 }
 
+// Labels are painted by shell Text elements using Qt's rich-text
+// autodetection, so a title shaped like markup makes the shell fetch what it
+// points at. Stripping "<" and ">" is what stops that detection.
+function plainText(value) {
+  var s = String(value === undefined || value === null ? "" : value)
+  return s.replace(/[<>]/g, "")
+          .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+          .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+}
+
 function clampText(value, max) {
-  var s = String(value === undefined || value === null ? "" : value).trim()
-  return s.length > (max || MAX_TEXT) ? s.slice(0, max || MAX_TEXT) : s
+  var s = plainText(value).trim()
+  var cap = max || MAX_TEXT
+  return s.length > cap ? s.slice(0, cap) : s
 }
 
 function normalizeLog(raw) {
