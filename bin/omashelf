@@ -45,7 +45,7 @@ EOF
 
 # Shared preamble for every python fragment below.
 read -r -d '' PRELUDE <<'PRELUDE_END' || true
-import datetime, importlib.machinery, importlib.util, json, os, random, sys, time
+import datetime, importlib.machinery, importlib.util, json, os, random, re, sys, time
 
 # The plugin directory is a git checkout, so leave no __pycache__ in it.
 sys.dont_write_bytecode = True
@@ -78,6 +78,80 @@ def plain(value, cap=None):
         out.append(" " if (ch < " " or "\x7f" <= ch <= "\x9f" or ch in "\u2028\u2029") else ch)
     return "".join(out).strip()[: cap or MAX_TEXT]
 
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def clamp_int(value, low, high):
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return low
+    return max(low, min(high, n))
+
+
+def new_id():
+    return "bk-%s-%s" % (format(int(time.time() * 1000), "x"), format(random.randint(0, 10**6), "x"))
+
+
+def normalize_log(raw):
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for entry in raw[-MAX_LOG:]:
+        if not isinstance(entry, dict):
+            continue
+        date = str(entry.get("date", "")).strip()
+        pages = clamp_int(entry.get("pages"), -MAX_PAGES, MAX_PAGES)
+        if not _DATE.match(date) or pages == 0:
+            continue
+        out.append({"date": date, "pages": pages})
+    return out
+
+
+def normalize_book(raw):
+    """The rules parseLibrary applies in the widget, so both sides agree."""
+    if not isinstance(raw, dict):
+        return None
+    title = plain(raw.get("title"))
+    if not title:
+        return None
+    total = clamp_int(raw.get("totalPages"), 1, MAX_PAGES)
+    current = clamp_int(raw.get("currentPage"), 0, total)
+    status = str(raw.get("status", "")).strip().lower()
+    if status not in ("reading", "finished", "paused", "wishlist"):
+        status = "finished" if current >= total else "reading"
+    return {
+        "id": plain(raw.get("id"), 64) or new_id(),
+        "title": title,
+        "author": plain(raw.get("author")),
+        "totalPages": total,
+        "currentPage": current,
+        "status": status,
+        "started": plain(raw.get("started"), 10),
+        "finished": plain(raw.get("finished"), 10),
+        "rating": clamp_int(raw.get("rating"), 0, 5),
+        "log": normalize_log(raw.get("log")),
+    }
+
+
+def normalize_library(lib):
+    books = []
+    seen = set()
+    for raw in lib.get("books", []):
+        book = normalize_book(raw)
+        if not book:
+            continue
+        if book["id"] in seen:
+            book["id"] = new_id()
+        seen.add(book["id"])
+        books.append(book)
+    current = plain(lib.get("currentId"), 64)
+    lib["version"] = 1
+    lib["books"] = books
+    lib["currentId"] = current if current in seen else ""
+    return lib
+
+
 def load_library():
     """Read through the helper's verified descriptor, never a second open()."""
     status, text, _ = _io.read_bounded(LIBRARY, MAX_BYTES)
@@ -99,23 +173,17 @@ def load_library():
         lib = {"books": lib if isinstance(lib, list) else []}
     if not isinstance(lib.get("books"), list):
         lib["books"] = []
-    return lib
+    return normalize_library(lib)
 
 def save_library(lib):
-    """Trim the per-book log, neutralise text, then replace the file atomically.
+    """Normalize, then replace the file atomically.
 
-    Every write trims the log, so repeated `read` calls cannot grow the file
-    without bound. The book count is deliberately left alone: the byte cap
-    bounds the file, and dropping books off a hand-edited shelf because someone
-    logged a page would destroy their data. `add` enforces that cap instead.
+    Every write trims each log to the cap, so repeated `read` calls cannot grow
+    the file. The book count is deliberately left alone: the byte cap bounds the
+    file, and dropping books off a hand-edited shelf because someone logged a
+    page would destroy their data. `add` enforces that cap instead.
     """
-    lib["version"] = 1
-    books = lib["books"] = lib.get("books", [])
-    for book in books:
-        log = book.get("log")
-        book["log"] = log[-MAX_LOG:] if isinstance(log, list) else []
-        book["title"] = plain(book.get("title", ""))
-        book["author"] = plain(book.get("author", ""))
+    normalize_library(lib)
     ok, message = _io.write_library(LIBRARY, MAX_BYTES, json.dumps(lib, indent=2) + "\n")
     if not ok:
         raise SystemExit("omashelf: %s" % message)
