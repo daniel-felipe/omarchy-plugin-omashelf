@@ -4,6 +4,7 @@ var MAX_BYTES = 1048576
 var MAX_BOOKS = 500
 var MAX_LOG_ENTRIES = 400
 var MAX_TEXT = 300
+var MAX_PAGES = 100000
 
 function todayStamp(date) {
   var d = date || new Date()
@@ -55,6 +56,8 @@ function normalizeLog(raw) {
     var date = String(entry.date || "").trim()
     var pages = Math.round(Number(entry.pages))
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isFinite(pages) || pages === 0) continue
+    if (pages > MAX_PAGES) pages = MAX_PAGES
+    else if (pages < -MAX_PAGES) pages = -MAX_PAGES
     out.push({ date: date, pages: pages })
   }
   return out.slice(-MAX_LOG_ENTRIES)
@@ -64,7 +67,7 @@ function normalizeBook(raw) {
   if (!raw || typeof raw !== "object") return null
   var title = clampText(raw.title)
   if (title === "") return null
-  var totalPages = clampInt(raw.totalPages, 1, 100000)
+  var totalPages = clampInt(raw.totalPages, 1, MAX_PAGES)
   var currentPage = clampInt(raw.currentPage, 0, totalPages)
   var status = String(raw.status || "").trim().toLowerCase()
   if (status !== "reading" && status !== "finished" && status !== "paused" && status !== "wishlist")
