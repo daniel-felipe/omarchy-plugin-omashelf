@@ -46,6 +46,19 @@ function clampText(value, max) {
   return s.length > cap ? s.slice(0, cap) : s
 }
 
+function byteLength(text) {
+  var s = String(text)
+  var bytes = 0
+  for (var i = 0; i < s.length; i++) {
+    var code = s.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff) { bytes += 4; i += 1 }
+    else bytes += 3
+  }
+  return bytes
+}
+
 function normalizeLog(raw) {
   if (!Array.isArray(raw)) return []
   var out = []

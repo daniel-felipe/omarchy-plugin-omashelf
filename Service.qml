@@ -76,8 +76,16 @@ QtObject {
 
   function persist(next) {
     if (!root.readable) return
+    var text = Library.serialize(next, root.currentId)
+    // Re-serializing with indentation can push a file that fits the read cap
+    // past it, and the helper would refuse the write.
+    if (Library.byteLength(text) > root.maxBytes) {
+      root.writeError = "too-large"
+      ioProc.request({ cmd: "poll" })
+      return
+    }
     root.books = next
-    ioProc.request({ cmd: "write", text: Library.serialize(next, root.currentId) })
+    ioProc.request({ cmd: "write", text: text })
   }
 
   function setCurrent(id) {
