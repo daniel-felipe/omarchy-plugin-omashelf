@@ -263,6 +263,7 @@ Panel {
             fontFamily: root.fontFamily
             iconComponent: Component {
               Text {
+                textFormat: Text.PlainText
                 text: "󰂺"
                 color: root.foreground
                 font.family: root.fontFamily
@@ -288,6 +289,7 @@ Panel {
               width: parent.width
               spacing: Style.space(8)
               Text {
+                textFormat: Text.PlainText
                 text: root.current ? ("page " + root.current.currentPage + " / " + root.current.totalPages) : ""
                 color: root.dim
                 font.family: root.fontFamily
@@ -295,6 +297,7 @@ Panel {
               }
               Item { Layout.fillWidth: true; implicitHeight: 1 }
               Text {
+                textFormat: Text.PlainText
                 Layout.maximumWidth: parent.width * 0.65
                 elide: Text.ElideRight
                 text: {
@@ -349,6 +352,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               Layout.fillWidth: true
               horizontalAlignment: Text.AlignHCenter
               visible: root.target && root.current && root.target.id !== root.current.id
@@ -422,6 +426,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom
                     text: modelData.pages > 0 ? String(modelData.pages) : "·"
@@ -464,6 +469,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.rows.length === 0
             width: parent.width
             text: "Shelf is empty. Press A to add a book."
@@ -557,6 +563,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             visible: shelf.loadError !== ""
             text: shelf.loadError === "too-large"
@@ -573,6 +580,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.pendingDeleteId !== ""
               ? "press x again to remove " + (root.target ? root.target.title : "")
@@ -602,6 +610,7 @@ Panel {
       spacing: Style.space(2)
 
       Text {
+        textFormat: Text.PlainText
         anchors.horizontalCenter: parent.horizontalCenter
         text: value
         color: root.foreground
@@ -610,6 +619,7 @@ Panel {
         font.bold: true
       }
       Text {
+        textFormat: Text.PlainText
         anchors.horizontalCenter: parent.horizontalCenter
         text: label
         color: root.dim
@@ -664,6 +674,7 @@ Panel {
         spacing: Style.space(8)
 
         Text {
+          textFormat: Text.PlainText
           text: bookRow.book && bookRow.book.status === "finished" ? "󰄬"
               : (bookRow.book && bookRow.book.status === "paused" ? "󰏤" : "󰂽")
           color: bookRow.isCurrent ? root.foreground : root.dim
@@ -677,6 +688,7 @@ Panel {
           spacing: 0
 
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: bookRow.book ? bookRow.book.title : ""
             color: root.foreground
@@ -686,6 +698,7 @@ Panel {
             elide: Text.ElideRight
           }
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: text !== ""
             text: {
@@ -705,6 +718,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           text: bookRow.book ? Library.percentText(bookRow.book) : ""
           color: bookRow.isCurrent ? root.foreground : root.dim
           font.family: root.fontFamily
