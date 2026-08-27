@@ -7,13 +7,21 @@ set -euo pipefail
 
 LIBRARY="${OMASHELF_LIBRARY:-$HOME/.local/state/omarchy/omashelf/library.json}"
 
-# Same bounds the plugin enforces. The library must stay small enough that the
-# shell can parse it without stalling, so this tool refuses to read a file that
-# is already over the cap and refuses to grow one past it.
+# Same bounds the plugin enforces.
 MAX_BYTES=1048576
 MAX_BOOKS=500
 MAX_LOG=400
 MAX_TEXT=300
+
+# Reads and writes go through bin/omashelf-io, the same bounded helper the
+# widget uses, rather than a second weaker copy: a plain open() here would
+# follow a symlink planted at the library path.
+SELF="${BASH_SOURCE[0]}"
+OMASHELF_IO="$(python3 -c 'import os, sys; print(os.path.join(os.path.dirname(os.path.realpath(sys.argv[1])), "omashelf-io"))' "$SELF")"
+[[ -f "$OMASHELF_IO" ]] || { echo "omashelf: cannot find omashelf-io next to $SELF" >&2; exit 1; }
+export OMASHELF_IO
+export OMASHELF_MAX_BYTES="$MAX_BYTES" OMASHELF_MAX_BOOKS="$MAX_BOOKS"
+export OMASHELF_MAX_LOG="$MAX_LOG" OMASHELF_MAX_TEXT="$MAX_TEXT"
 
 usage() {
   cat <<'EOF'
@@ -35,74 +43,133 @@ Set OMASHELF_LIBRARY to use a different library file.
 EOF
 }
 
+# Shared preamble for every python fragment below.
+read -r -d '' PRELUDE <<'PRELUDE_END' || true
+import datetime, importlib.machinery, importlib.util, json, os, random, sys, time
+
+# The plugin directory is a git checkout, so leave no __pycache__ in it.
+sys.dont_write_bytecode = True
+
+# omashelf-io has no .py suffix, so name a loader explicitly.
+_loader = importlib.machinery.SourceFileLoader("omashelf_io", os.environ["OMASHELF_IO"])
+_io = importlib.util.module_from_spec(importlib.util.spec_from_loader("omashelf_io", _loader))
+_loader.exec_module(_io)
+
+LIBRARY = sys.argv[1]
+MAX_BYTES = int(os.environ["OMASHELF_MAX_BYTES"])
+MAX_BOOKS = int(os.environ["OMASHELF_MAX_BOOKS"])
+MAX_LOG = int(os.environ["OMASHELF_MAX_LOG"])
+MAX_TEXT = int(os.environ["OMASHELF_MAX_TEXT"])
+MAX_PAGES = 100000
+
+_STRIP = set("<>") | {chr(c) for c in (0x200e, 0x200f, *range(0x202a, 0x202f), *range(0x2066, 0x206a))}
+
+def plain(value, cap=None):
+    """The rule Library.js applies: nothing reaching a label may look like markup.
+
+    Stripping "<" and ">" stops Qt's rich-text autodetection in the shell, and
+    dropping the control characters keeps a title carrying an ANSI escape from
+    rewriting the terminal that ran `omashelf list`.
+    """
+    out = []
+    for ch in str(value):
+        if ch in _STRIP:
+            continue
+        out.append(" " if (ch < " " or "\x7f" <= ch <= "\x9f" or ch in "\u2028\u2029") else ch)
+    return "".join(out).strip()[: cap or MAX_TEXT]
+
+def load_library():
+    """Read through the helper's verified descriptor, never a second open()."""
+    status, text, _ = _io.read_bounded(LIBRARY, MAX_BYTES)
+    if status == "too-large":
+        raise SystemExit(
+            "omashelf: %s is over the %d byte limit — refusing to read or write it" % (LIBRARY, MAX_BYTES))
+    if status == "not-regular":
+        raise SystemExit(
+            "omashelf: %s is not a regular file — refusing to read or write it" % LIBRARY)
+    if status == "missing" or (status == "ok" and not text.strip()):
+        return {"version": 1, "books": []}
+    if status != "ok":
+        raise SystemExit("omashelf: %s could not be read" % LIBRARY)
+    try:
+        lib = json.loads(text)
+    except ValueError:
+        raise SystemExit("omashelf: %s is not valid JSON — fix or remove it" % LIBRARY)
+    if not isinstance(lib, dict):
+        lib = {"books": lib if isinstance(lib, list) else []}
+    if not isinstance(lib.get("books"), list):
+        lib["books"] = []
+    return lib
+
+def save_library(lib):
+    """Trim the per-book log, neutralise text, then replace the file atomically.
+
+    Every write trims the log, so repeated `read` calls cannot grow the file
+    without bound. The book count is deliberately left alone: the byte cap
+    bounds the file, and dropping books off a hand-edited shelf because someone
+    logged a page would destroy their data. `add` enforces that cap instead.
+    """
+    lib["version"] = 1
+    books = lib["books"] = lib.get("books", [])
+    for book in books:
+        log = book.get("log")
+        book["log"] = log[-MAX_LOG:] if isinstance(log, list) else []
+        book["title"] = plain(book.get("title", ""))
+        book["author"] = plain(book.get("author", ""))
+    ok, message = _io.write_library(LIBRARY, MAX_BYTES, json.dumps(lib, indent=2) + "\n")
+    if not ok:
+        raise SystemExit("omashelf: %s" % message)
+PRELUDE_END
+
 py() {
-  python3 - "$LIBRARY" "$@"
-}
-
-check_size() {
-  local bytes
-  bytes=$(stat -Lc %s "$LIBRARY" 2>/dev/null || echo 0)
-  if (( bytes > MAX_BYTES )); then
-    echo "omashelf: $LIBRARY is ${bytes} bytes, over the ${MAX_BYTES} byte limit — refusing to read or write it" >&2
-    exit 1
-  fi
-}
-
-ensure_library() {
-  mkdir -p "$(dirname "$LIBRARY")"
-  [[ -f "$LIBRARY" ]] || printf '{\n  "version": 1,\n  "books": []\n}\n' >"$LIBRARY"
+  python3 -c "$PRELUDE
+$(cat)" "$LIBRARY" "$@"
 }
 
 cmd="${1:-list}"
 shift || true
-ensure_library
-check_size
-export OMASHELF_MAX_BOOKS="$MAX_BOOKS" OMASHELF_MAX_LOG="$MAX_LOG" OMASHELF_MAX_TEXT="$MAX_TEXT"
 
 case "$cmd" in
   path) echo "$LIBRARY" ;;
 
   list) py <<'PY'
-import json, sys
-lib = json.load(open(sys.argv[1]))
-books = lib.get("books", [])
+lib = load_library()
+books = lib["books"]
 if not books:
-    print("Shelf is empty. omashelf add \"Title\" 320 \"Author\"")
+    print('Shelf is empty. omashelf add "Title" 320 "Author"')
     raise SystemExit(0)
 rank = {"reading": 0, "paused": 1, "wishlist": 2, "finished": 3}
-books.sort(key=lambda b: (rank.get(b.get("status"), 4), -(b.get("currentPage", 0) / max(1, b.get("totalPages", 1)))))
+books.sort(key=lambda b: (rank.get(b.get("status"), 4),
+                          -(b.get("currentPage", 0) / max(1, b.get("totalPages", 1)))))
 for b in books:
     total = max(1, b.get("totalPages", 1))
     pct = round(100 * b.get("currentPage", 0) / total)
     mark = {"reading": "*", "finished": "v", "paused": "-"}.get(b.get("status"), " ")
-    author = b.get("author") or ""
-    print(f"{mark} {pct:3d}%  {b.get('currentPage',0):>5}/{total:<5} {b.get('title','')}" + (f" — {author}" if author else ""))
+    author = plain(b.get("author") or "")
+    line = f"{mark} {pct:3d}%  {b.get('currentPage', 0):>5}/{total:<5} {plain(b.get('title', ''))}"
+    print(line + (f" — {author}" if author else ""))
 PY
     ;;
 
   add)
     [[ $# -ge 2 ]] || { usage; exit 1; }
+    [[ "$2" =~ ^[0-9]+$ ]] || { echo "omashelf add needs a whole number of pages" >&2; exit 1; }
     py "$1" "$2" "${3:-}" <<'PY'
-import json, os, sys, time, random, datetime
-path, title, pages, author = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-max_books = int(os.environ["OMASHELF_MAX_BOOKS"])
-max_text = int(os.environ["OMASHELF_MAX_TEXT"])
-lib = json.load(open(path))
-if len(lib.get("books", [])) >= max_books:
-    raise SystemExit(f"omashelf: shelf already holds {max_books} books — remove one first")
-if not 1 <= pages <= 100000:
-    raise SystemExit("omashelf: page count must be between 1 and 100000")
-title, author = title[:max_text], author[:max_text]
-book = {
+title, pages, author = plain(sys.argv[2]), int(sys.argv[3]), plain(sys.argv[4])
+if not title:
+    raise SystemExit("omashelf: a title is required")
+if not 1 <= pages <= MAX_PAGES:
+    raise SystemExit(f"omashelf: page count must be between 1 and {MAX_PAGES}")
+lib = load_library()
+if len(lib["books"]) >= MAX_BOOKS:
+    raise SystemExit(f"omashelf: shelf already holds {MAX_BOOKS} books — remove one first")
+lib["books"].append({
     "id": "bk-%s-%s" % (format(int(time.time() * 1000), "x"), format(random.randint(0, 10**6), "x")),
     "title": title, "author": author, "totalPages": pages, "currentPage": 0,
     "status": "reading", "started": datetime.date.today().isoformat(), "finished": "",
     "rating": 0, "log": [],
-}
-lib.setdefault("books", []).append(book)
-lib["version"] = 1
-json.dump(lib, open(path, "w"), indent=2)
-open(path, "a").write("\n")
+})
+save_library(lib)
 print(f"Added {title} ({pages} pages)")
 PY
     ;;
@@ -113,21 +180,20 @@ PY
       [[ "${2:-}" =~ ^-?[0-9]+$ ]] || { echo "omashelf $cmd needs a whole number of pages" >&2; exit 1; }
     fi
     py "$cmd" "$1" "${2:-0}" <<'PY'
-import json, os, sys, datetime
-path, action, needle, amount = sys.argv[1], sys.argv[2], sys.argv[3].lower(), int(sys.argv[4])
-lib = json.load(open(path))
-books = lib.get("books", [])
-matches = [b for b in books if needle in b.get("title", "").lower()]
+action, needle, amount = sys.argv[2], sys.argv[3].lower(), int(sys.argv[4])
+lib = load_library()
+books = lib["books"]
+matches = [b for b in books if needle in str(b.get("title", "")).lower()]
 if not matches:
     raise SystemExit(f"No book matching {needle!r}")
 if len(matches) > 1:
-    raise SystemExit("Ambiguous: " + ", ".join(b["title"] for b in matches))
+    raise SystemExit("Ambiguous: " + ", ".join(plain(b.get("title", "")) for b in matches))
 book = matches[0]
 today = datetime.date.today().isoformat()
 
 if action == "remove":
     books.remove(book)
-    print(f"Removed {book['title']}")
+    print(f"Removed {plain(book.get('title', ''))}")
 else:
     total = book.get("totalPages", 1)
     if action == "read":
@@ -147,8 +213,6 @@ else:
                 break
         else:
             log.append({"date": today, "pages": delta})
-        # Keep the log bounded: only the recent entries feed the dashboard.
-        del log[:max(0, len(log) - int(os.environ["OMASHELF_MAX_LOG"]))]
     if target >= total:
         book["status"] = "finished"
         book["finished"] = book.get("finished") or today
@@ -156,22 +220,21 @@ else:
         book["status"] = "reading"
         book["finished"] = ""
     pct = round(100 * target / max(1, total))
-    print(f"{book['title']}: page {target}/{total} ({pct}%)")
+    print(f"{plain(book.get('title', ''))}: page {target}/{total} ({pct}%)")
 
-lib["version"] = 1
-json.dump(lib, open(path, "w"), indent=2)
-open(path, "a").write("\n")
+save_library(lib)
 PY
     ;;
 
   stats) py <<'PY'
-import json, sys, datetime
-lib = json.load(open(sys.argv[1]))
-books = lib.get("books", [])
+books = load_library()["books"]
 today = datetime.date.today()
+
 def pages_on(day):
     stamp = day.isoformat()
-    return sum(e.get("pages", 0) for b in books for e in b.get("log", []) if e.get("date") == stamp and e.get("pages", 0) > 0)
+    return sum(e.get("pages", 0) for b in books for e in b.get("log", [])
+               if e.get("date") == stamp and e.get("pages", 0) > 0)
+
 streak = 0
 day = today if pages_on(today) else today - datetime.timedelta(days=1)
 while pages_on(day) > 0:
@@ -180,7 +243,7 @@ while pages_on(day) > 0:
 week = sum(pages_on(today - datetime.timedelta(days=d)) for d in range(7))
 year = str(today.year)
 print(f"Reading      {sum(1 for b in books if b.get('status') == 'reading')}")
-print(f"Finished {year} {sum(1 for b in books if b.get('status') == 'finished' and str(b.get('finished',''))[:4] == year)}")
+print(f"Finished {year} {sum(1 for b in books if b.get('status') == 'finished' and str(b.get('finished', ''))[:4] == year)}")
 print(f"Pages today  {pages_on(today)}")
 print(f"Pages 7d     {week}")
 print(f"Streak       {streak} days")
